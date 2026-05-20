@@ -1,0 +1,543 @@
+import { useState, useEffect, useRef } from "react";
+
+const COLORS = {
+  bg: "#0d0a14",
+  card: "#16111f",
+  cardBorder: "#2a1f3d",
+  accent: "#e040a0",
+  accentDim: "#7b1fa2",
+  accentGlow: "rgba(224,64,160,0.18)",
+  gold: "#ffd54f",
+  text: "#f3eaff",
+  muted: "#9b82b8",
+  bubble_ai: "#1e1530",
+  bubble_user: "#3a0d6e",
+  green: "#69f0ae",
+  red: "#ff5370",
+};
+
+// ── Mock profiles stored globally ──────────────────────────────────────────
+const GLOBAL_PROFILES = [
+  { id: 1, name: "Ana Lima", age: 26, city: "São Paulo", interests: ["música", "viagem", "cinema"], gender: "feminino", looking: "masculino", bio: "Adoro explorar novos lugares e curtir boa música ao vivo.", avatar: "👩🏽" },
+  { id: 2, name: "Carlos Mendes", age: 30, city: "Rio de Janeiro", interests: ["surf", "fotografia", "gastronomia"], gender: "masculino", looking: "feminino", bio: "Surfista de fim de semana, apaixonado por fotografia.", avatar: "👨🏻" },
+  { id: 3, name: "Julia Ramos", age: 24, city: "Belo Horizonte", interests: ["yoga", "leitura", "arte"], gender: "feminino", looking: "masculino", bio: "Artista em construção, apaixonada por chá e livros.", avatar: "👩🏻" },
+  { id: 4, name: "Rafael Costa", age: 28, city: "Curitiba", interests: ["tecnologia", "games", "ciclismo"], gender: "masculino", looking: "feminino", bio: "Dev de dia, gamer de noite. Adoro pedalar no fim de semana.", avatar: "👨🏾" },
+  { id: 5, name: "Mariana Souza", age: 27, city: "Salvador", interests: ["dança", "praia", "culinária"], gender: "feminino", looking: "masculino", bio: "Baiana de coração, danço e cozinho com amor.", avatar: "👩🏾" },
+];
+
+// ── AI via Anthropic API ────────────────────────────────────────────────────
+async function askAI(messages, systemPrompt) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages,
+    }),
+  });
+  const data = await res.json();
+  return data.content?.map(b => b.text || "").join("") || "";
+}
+
+// ── Registration AI ─────────────────────────────────────────────────────────
+const REGISTER_SYSTEM = `Você é a IA de cadastro de um app de namoro chamado "Conecta♥". 
+Seu objetivo é coletar, de forma amigável e conversacional em português brasileiro, as seguintes informações do usuário:
+1. Nome
+2. Idade
+3. Cidade
+4. Gênero (masculino/feminino/outro)
+5. Está procurando (masculino/feminino/qualquer)
+6. Interesses (pelo menos 2, ex: música, viagens, esportes)
+7. Uma frase curta de bio
+
+Colete UMA informação por vez. Seja caloroso, use emojis com moderação. 
+Quando tiver TODAS as informações, responda EXATAMENTE neste formato JSON (e nada mais além de um texto de despedida antes):
+
+PERFIL_COMPLETO:{"name":"...","age":...,"city":"...","gender":"...","looking":"...","interests":[...],"bio":"..."}
+
+Antes do JSON, escreva uma mensagem carinhosa dizendo que o perfil está pronto.`;
+
+// ── Matching AI ─────────────────────────────────────────────────────────────
+function buildMatchingSystem(userProfile, candidate) {
+  return `Você é a IA de matching do app "Conecta♥". 
+Você está apresentando um perfil para ${userProfile.name} e perguntando se ela/ele tem interesse.
+
+Perfil sendo apresentado:
+- Nome: ${candidate.name}, ${candidate.age} anos, ${candidate.city}
+- Interesses: ${candidate.interests.join(", ")}
+- Bio: ${candidate.bio}
+
+Apresente o perfil de forma atraente, mencione pontos em comum com ${userProfile.name} (interesses: ${userProfile.interests?.join(", ")}), e pergunte se há interesse.
+Seja breve (máx 4 linhas). Use emojis com moderação. Fale em português brasileiro.
+Se o usuário disser sim/curtir/gostei → responda: MATCH_SIM
+Se o usuário disser não/passar/próximo → responda: MATCH_NAO
+Caso contrário responda normalmente à mensagem.`;
+}
+
+// ── Components ───────────────────────────────────────────────────────────────
+
+function TypingDots() {
+  return (
+    <div style={{ display: "flex", gap: 5, padding: "10px 14px", background: COLORS.bubble_ai, borderRadius: 18, borderBottomLeftRadius: 4, width: "fit-content", alignItems: "center" }}>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{
+          width: 8, height: 8, borderRadius: "50%", background: COLORS.accent,
+          animation: "bounce 1.2s infinite",
+          animationDelay: `${i * 0.2}s`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function ChatBubble({ msg }) {
+  const isAI = msg.role === "assistant";
+  return (
+    <div style={{ display: "flex", justifyContent: isAI ? "flex-start" : "flex-end", marginBottom: 10 }}>
+      {isAI && <div style={{ fontSize: 22, marginRight: 8, alignSelf: "flex-end" }}>💜</div>}
+      <div style={{
+        maxWidth: "75%", padding: "10px 14px", borderRadius: 18,
+        borderBottomLeftRadius: isAI ? 4 : 18,
+        borderBottomRightRadius: isAI ? 18 : 4,
+        background: isAI ? COLORS.bubble_ai : COLORS.bubble_user,
+        color: COLORS.text, fontSize: 14, lineHeight: 1.55,
+        boxShadow: isAI ? `0 0 12px ${COLORS.accentGlow}` : "none",
+        border: `1px solid ${isAI ? COLORS.cardBorder : "transparent"}`,
+      }}>
+        {msg.content}
+      </div>
+    </div>
+  );
+}
+
+function ProfileCard({ profile, onLike, onPass }) {
+  const [flipped, setFlipped] = useState(false);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+      <div
+        onClick={() => setFlipped(f => !f)}
+        style={{
+          width: 280, height: 360, cursor: "pointer",
+          perspective: 1000,
+          transition: "transform 0.1s",
+        }}
+      >
+        <div style={{
+          width: "100%", height: "100%", position: "relative",
+          transformStyle: "preserve-3d",
+          transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+          transition: "transform 0.5s ease",
+        }}>
+          {/* Front */}
+          <div style={{
+            position: "absolute", inset: 0, backfaceVisibility: "hidden",
+            background: `linear-gradient(160deg, ${COLORS.card}, #1a0a2e)`,
+            borderRadius: 24, border: `1.5px solid ${COLORS.cardBorder}`,
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "center", gap: 12, padding: 24,
+            boxShadow: `0 0 40px ${COLORS.accentGlow}`,
+          }}>
+            <div style={{ fontSize: 80 }}>{profile.avatar}</div>
+            <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, color: COLORS.text, fontWeight: 700 }}>{profile.name}</div>
+            <div style={{ color: COLORS.muted, fontSize: 14 }}>{profile.age} anos · {profile.city}</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center", marginTop: 4 }}>
+              {profile.interests.map(i => (
+                <span key={i} style={{ background: COLORS.accentGlow, border: `1px solid ${COLORS.accentDim}`, borderRadius: 20, padding: "3px 10px", fontSize: 12, color: COLORS.accent }}>{i}</span>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 4 }}>toque para ver bio →</div>
+          </div>
+          {/* Back */}
+          <div style={{
+            position: "absolute", inset: 0, backfaceVisibility: "hidden",
+            transform: "rotateY(180deg)",
+            background: `linear-gradient(160deg, #1a0a2e, ${COLORS.card})`,
+            borderRadius: 24, border: `1.5px solid ${COLORS.accent}`,
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "center", padding: 28, gap: 12,
+          }}>
+            <div style={{ fontSize: 32 }}>💬</div>
+            <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: COLORS.text, textAlign: "center", fontStyle: "italic", lineHeight: 1.6 }}>"{profile.bio}"</div>
+            <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 8 }}>← toque para voltar</div>
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 20 }}>
+        <button onClick={onPass} style={{ width: 64, height: 64, borderRadius: "50%", border: `2px solid ${COLORS.red}`, background: "transparent", color: COLORS.red, fontSize: 26, cursor: "pointer", transition: "all 0.2s" }}
+          onMouseEnter={e => e.target.style.background = COLORS.red}
+          onMouseLeave={e => e.target.style.background = "transparent"}>✕</button>
+        <button onClick={onLike} style={{ width: 64, height: 64, borderRadius: "50%", border: `2px solid ${COLORS.green}`, background: "transparent", color: COLORS.green, fontSize: 26, cursor: "pointer", transition: "all 0.2s" }}
+          onMouseEnter={e => e.target.style.background = COLORS.green}
+          onMouseLeave={e => e.target.style.background = "transparent"}>♥</button>
+      </div>
+    </div>
+  );
+}
+
+function MatchModal({ user, matched, onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{
+        background: COLORS.card, borderRadius: 28, padding: 40, textAlign: "center", maxWidth: 340,
+        border: `2px solid ${COLORS.accent}`, boxShadow: `0 0 60px ${COLORS.accentGlow}`,
+        animation: "popIn 0.4s ease",
+      }}>
+        <div style={{ fontSize: 52 }}>🎉</div>
+        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, color: COLORS.accent, margin: "12px 0 4px" }}>É um Match!</div>
+        <div style={{ fontSize: 42, margin: "8px 0" }}>{user.avatar || "😊"} ♥ {matched.avatar}</div>
+        <div style={{ color: COLORS.muted, fontSize: 14, marginBottom: 16 }}>
+          Você e <b style={{ color: COLORS.text }}>{matched.name}</b> se curtiram!
+        </div>
+        <div style={{ background: COLORS.bubble_ai, borderRadius: 16, padding: 16, marginBottom: 20, fontSize: 13, color: COLORS.text, textAlign: "left" }}>
+          <b>📱 Contato:</b><br />
+          WhatsApp: +55 (11) 9{Math.floor(Math.random() * 9000 + 1000)}-{Math.floor(Math.random() * 9000 + 1000)}<br />
+          Instagram: @{matched.name.split(" ")[0].toLowerCase()}_{matched.city.toLowerCase().replace(" ", "")}
+        </div>
+        <button onClick={onClose} style={{ background: COLORS.accent, border: "none", borderRadius: 30, color: "#fff", padding: "12px 32px", fontSize: 15, cursor: "pointer", fontWeight: 700 }}>
+          Continuar conhecendo ✨
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [screen, setScreen] = useState("welcome"); // welcome | register | matching | nomatch
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [userProfile, setUserProfile] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [currentCandidate, setCurrentCandidate] = useState(null);
+  const [matchMessages, setMatchMessages] = useState([]);
+  const [matchInput, setMatchInput] = useState("");
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [matchModal, setMatchModal] = useState(null);
+  const [likes, setLikes] = useState([]); // ids that liked user back (simulated)
+  const bottomRef = useRef(null);
+  const matchBottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  useEffect(() => {
+    matchBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [matchMessages, matchLoading]);
+
+  // ── Start registration ──────────────────────────────────────────────────
+  async function startRegister() {
+    setScreen("register");
+    setLoading(true);
+    const first = await askAI([], REGISTER_SYSTEM + "\n\nInicie a conversa de cadastro com uma saudação calorosa e peça o primeiro dado.");
+    setMessages([{ role: "assistant", content: first }]);
+    setLoading(false);
+  }
+
+  // ── Send registration message ───────────────────────────────────────────
+  async function sendRegister() {
+    if (!input.trim()) return;
+    const userMsg = { role: "user", content: input };
+    const newMsgs = [...messages, userMsg];
+    setMessages(newMsgs);
+    setInput("");
+    setLoading(true);
+
+    const apiMsgs = newMsgs.map(m => ({ role: m.role, content: m.content }));
+    const reply = await askAI(apiMsgs, REGISTER_SYSTEM);
+
+    // Check if profile is complete
+    const jsonMatch = reply.match(/PERFIL_COMPLETO:(\{.*\})/s);
+    if (jsonMatch) {
+      try {
+        const profile = JSON.parse(jsonMatch[1]);
+        profile.avatar = "😊";
+        profile.id = Date.now();
+        const cleanReply = reply.replace(/PERFIL_COMPLETO:.*$/s, "").trim();
+        setMessages(m => [...m, { role: "assistant", content: cleanReply || "Seu perfil foi criado com sucesso! 🎉" }]);
+        setUserProfile(profile);
+        setTimeout(() => initMatching(profile), 1800);
+      } catch {
+        setMessages(m => [...m, { role: "assistant", content: reply }]);
+      }
+    } else {
+      setMessages(m => [...m, { role: "assistant", content: reply }]);
+    }
+    setLoading(false);
+  }
+
+  // ── Init matching ───────────────────────────────────────────────────────
+  function initMatching(profile) {
+    // Filter candidates (opposite gender or any)
+    const filtered = GLOBAL_PROFILES.filter(p =>
+      p.id !== profile.id &&
+      (p.gender === profile.looking || profile.looking === "qualquer" || p.looking === profile.gender || p.looking === "qualquer")
+    );
+    // Simulate some already liked the user
+    const likedBack = filtered.slice(0, 2).map(p => p.id);
+    setLikes(likedBack);
+    setCandidates(filtered);
+    setScreen("matching");
+    loadCandidate(filtered[0], profile);
+  }
+
+  // ── Load a candidate into matching chat ─────────────────────────────────
+  async function loadCandidate(candidate, profile) {
+    if (!candidate) { setScreen("nomatch"); return; }
+    setCurrentCandidate(candidate);
+    setMatchMessages([]);
+    setMatchLoading(true);
+    const sys = buildMatchingSystem(profile || userProfile, candidate);
+    const intro = await askAI([], sys + "\n\nApresente este perfil agora.");
+    setMatchMessages([{ role: "assistant", content: intro }]);
+    setMatchLoading(false);
+  }
+
+  // ── User sends message in matching ──────────────────────────────────────
+  async function sendMatch() {
+    if (!matchInput.trim() || !currentCandidate) return;
+    const userMsg = { role: "user", content: matchInput };
+    const newMsgs = [...matchMessages, userMsg];
+    setMatchMessages(newMsgs);
+    setMatchInput("");
+    setMatchLoading(true);
+
+    const sys = buildMatchingSystem(userProfile, currentCandidate);
+    const apiMsgs = newMsgs.map(m => ({ role: m.role, content: m.content }));
+    const reply = await askAI(apiMsgs, sys);
+
+    if (reply.includes("MATCH_SIM")) {
+      const isMatch = likes.includes(currentCandidate.id);
+      const cleanReply = reply.replace("MATCH_SIM", "").trim();
+      setMatchMessages(m => [...m, { role: "assistant", content: cleanReply || "Que ótimo! 💜" }]);
+      setMatchLoading(false);
+      if (isMatch) {
+        setTimeout(() => setMatchModal(currentCandidate), 800);
+      } else {
+        setTimeout(() => {
+          setMatchMessages(m => [...m, { role: "assistant", content: `Hmm... ${currentCandidate.name} ainda não viu seu perfil. Vou te mostrar mais pessoas enquanto isso! 😊` }]);
+          setTimeout(() => nextCandidate(), 2000);
+        }, 1000);
+      }
+    } else if (reply.includes("MATCH_NAO")) {
+      const cleanReply = reply.replace("MATCH_NAO", "").trim();
+      setMatchMessages(m => [...m, { role: "assistant", content: cleanReply || "Ok! Próximo perfil... 👀" }]);
+      setMatchLoading(false);
+      setTimeout(() => nextCandidate(), 1500);
+    } else {
+      setMatchMessages(m => [...m, { role: "assistant", content: reply }]);
+      setMatchLoading(false);
+    }
+  }
+
+  function nextCandidate() {
+    const idx = candidates.findIndex(c => c.id === currentCandidate.id);
+    const next = candidates[idx + 1];
+    loadCandidate(next, userProfile);
+  }
+
+  function handleLike() { sendMatchDecision("sim"); }
+  function handlePass() { sendMatchDecision("não"); }
+  function sendMatchDecision(decision) {
+    setMatchInput(decision);
+    setTimeout(() => {
+      const synth = { role: "user", content: decision };
+      const newMsgs = [...matchMessages, synth];
+      setMatchMessages(newMsgs);
+      setMatchInput("");
+      // trigger AI
+      setMatchLoading(true);
+      const sys = buildMatchingSystem(userProfile, currentCandidate);
+      askAI(newMsgs.map(m => ({ role: m.role, content: m.content })), sys).then(reply => {
+        if (reply.includes("MATCH_SIM")) {
+          const isMatch = likes.includes(currentCandidate.id);
+          setMatchMessages(m => [...m, { role: "assistant", content: isMatch ? "Incrível! 💜 Deixa eu verificar..." : "Que bom! Aguarda um momento... 🔍" }]);
+          setMatchLoading(false);
+          if (isMatch) setTimeout(() => setMatchModal(currentCandidate), 800);
+          else setTimeout(() => nextCandidate(), 1500);
+        } else if (reply.includes("MATCH_NAO")) {
+          setMatchMessages(m => [...m, { role: "assistant", content: "Ok! Próximo perfil... 👀" }]);
+          setMatchLoading(false);
+          setTimeout(() => nextCandidate(), 1500);
+        } else {
+          setMatchMessages(m => [...m, { role: "assistant", content: reply }]);
+          setMatchLoading(false);
+        }
+      });
+    }, 50);
+  }
+
+  // ── Screens ────────────────────────────────────────────────────────────
+  if (screen === "welcome") return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Lato', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=Lato:wght@300;400;700&display=swap');
+        @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-8px)} }
+        @keyframes popIn { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
+        @keyframes fadeUp { from{transform:translateY(30px);opacity:0} to{transform:translateY(0);opacity:1} }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: ${COLORS.accentDim}; border-radius: 4px; }
+      `}</style>
+      <div style={{ textAlign: "center", animation: "fadeUp 0.8s ease", padding: 32 }}>
+        <div style={{ fontSize: 72, marginBottom: 16 }}>💜</div>
+        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 48, color: COLORS.accent, letterSpacing: -1 }}>Conecta<span style={{ color: COLORS.gold }}>♥</span></div>
+        <div style={{ color: COLORS.muted, fontSize: 16, marginTop: 8, marginBottom: 40, fontWeight: 300, letterSpacing: 1 }}>Conexões reais, criadas com inteligência</div>
+        <div style={{ display: "flex", gap: 16, flexDirection: "column", maxWidth: 280, margin: "0 auto" }}>
+          <button onClick={startRegister} style={{
+            background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentDim})`,
+            border: "none", borderRadius: 30, color: "#fff", padding: "16px 32px",
+            fontSize: 16, cursor: "pointer", fontWeight: 700, letterSpacing: 0.5,
+            boxShadow: `0 4px 24px ${COLORS.accentGlow}`,
+          }}>
+            Criar meu perfil ✨
+          </button>
+          <button onClick={() => { setUserProfile(GLOBAL_PROFILES[1]); initMatching(GLOBAL_PROFILES[1]); }} style={{
+            background: "transparent", border: `1.5px solid ${COLORS.cardBorder}`,
+            borderRadius: 30, color: COLORS.muted, padding: "14px 32px",
+            fontSize: 14, cursor: "pointer",
+          }}>
+            Demo rápida (pular cadastro)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (screen === "register") return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", fontFamily: "'Lato', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=Lato:wght@300;400;700&display=swap');
+        @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-8px)} }
+        @keyframes fadeUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: ${COLORS.accentDim}; border-radius: 4px; }
+        textarea:focus { outline: none; }
+      `}</style>
+      {/* Header */}
+      <div style={{ padding: "16px 20px", borderBottom: `1px solid ${COLORS.cardBorder}`, display: "flex", alignItems: "center", gap: 10, background: COLORS.card }}>
+        <div style={{ fontSize: 26 }}>💜</div>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: COLORS.accent }}>Conecta♥ — Assistente de Cadastro</div>
+          <div style={{ fontSize: 11, color: COLORS.green }}>● Online</div>
+        </div>
+      </div>
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 4 }}>
+        {messages.map((m, i) => <ChatBubble key={i} msg={m} />)}
+        {loading && <TypingDots />}
+        <div ref={bottomRef} />
+      </div>
+      {/* Input */}
+      <div style={{ padding: "12px 16px", background: COLORS.card, borderTop: `1px solid ${COLORS.cardBorder}`, display: "flex", gap: 10, alignItems: "flex-end" }}>
+        <textarea
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendRegister(); } }}
+          placeholder="Digite sua resposta..."
+          rows={1}
+          style={{
+            flex: 1, background: COLORS.bubble_ai, border: `1px solid ${COLORS.cardBorder}`,
+            borderRadius: 20, color: COLORS.text, fontSize: 14, padding: "10px 16px",
+            resize: "none", fontFamily: "'Lato', sans-serif", lineHeight: 1.4,
+          }}
+        />
+        <button onClick={sendRegister} disabled={loading} style={{
+          width: 44, height: 44, borderRadius: "50%",
+          background: loading ? COLORS.accentDim : COLORS.accent,
+          border: "none", color: "#fff", fontSize: 18, cursor: loading ? "not-allowed" : "pointer",
+        }}>➤</button>
+      </div>
+    </div>
+  );
+
+  if (screen === "matching") return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", fontFamily: "'Lato', sans-serif", maxWidth: 480, margin: "0 auto" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=Lato:wght@300;400;700&display=swap');
+        @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-8px)} }
+        @keyframes popIn { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: ${COLORS.accentDim}; border-radius: 4px; }
+        textarea:focus { outline: none; }
+      `}</style>
+      {/* Header */}
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${COLORS.cardBorder}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: COLORS.card }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontSize: 24 }}>💜</div>
+          <div>
+            <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, color: COLORS.accent }}>Conecta♥</div>
+            <div style={{ fontSize: 11, color: COLORS.muted }}>Olá, {userProfile?.name?.split(" ")[0]} 👋</div>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.gold, background: "rgba(255,213,79,0.1)", padding: "4px 10px", borderRadius: 20, border: "1px solid rgba(255,213,79,0.3)" }}>
+          {candidates.length} perfis disponíveis
+        </div>
+      </div>
+
+      {/* Profile card */}
+      {currentCandidate && (
+        <div style={{ padding: "20px 0 8px", display: "flex", justifyContent: "center" }}>
+          <ProfileCard profile={currentCandidate} onLike={handleLike} onPass={handlePass} />
+        </div>
+      )}
+
+      {/* AI Matching Chat */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 280 }}>
+        {matchMessages.map((m, i) => <ChatBubble key={i} msg={m} />)}
+        {matchLoading && <TypingDots />}
+        <div ref={matchBottomRef} />
+      </div>
+
+      {/* Quick buttons */}
+      <div style={{ padding: "8px 16px", display: "flex", gap: 8 }}>
+        {["Curti! ♥", "Não é meu tipo", "Me conta mais 😊"].map(t => (
+          <button key={t} onClick={() => setMatchInput(t)} style={{
+            background: COLORS.bubble_ai, border: `1px solid ${COLORS.cardBorder}`,
+            borderRadius: 20, color: COLORS.muted, padding: "6px 12px", fontSize: 12, cursor: "pointer",
+          }}>{t}</button>
+        ))}
+      </div>
+
+      {/* Input */}
+      <div style={{ padding: "10px 16px 16px", background: COLORS.card, borderTop: `1px solid ${COLORS.cardBorder}`, display: "flex", gap: 10, alignItems: "flex-end" }}>
+        <textarea
+          value={matchInput}
+          onChange={e => setMatchInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMatch(); } }}
+          placeholder="Responda a IA..."
+          rows={1}
+          style={{
+            flex: 1, background: COLORS.bubble_ai, border: `1px solid ${COLORS.cardBorder}`,
+            borderRadius: 20, color: COLORS.text, fontSize: 14, padding: "10px 16px",
+            resize: "none", fontFamily: "'Lato', sans-serif",
+          }}
+        />
+        <button onClick={sendMatch} disabled={matchLoading} style={{
+          width: 44, height: 44, borderRadius: "50%",
+          background: matchLoading ? COLORS.accentDim : COLORS.accent,
+          border: "none", color: "#fff", fontSize: 18, cursor: "pointer",
+        }}>➤</button>
+      </div>
+
+      {matchModal && <MatchModal user={userProfile} matched={matchModal} onClose={() => { setMatchModal(null); nextCandidate(); }} />}
+    </div>
+  );
+
+  if (screen === "nomatch") return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Lato', sans-serif", textAlign: "center", padding: 32 }}>
+      <div>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>🔍</div>
+        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, color: COLORS.text, marginBottom: 8 }}>Você viu todos os perfis!</div>
+        <div style={{ color: COLORS.muted, marginBottom: 32 }}>Novos perfis chegam toda semana. Volte em breve 💜</div>
+        <button onClick={() => window.location.reload()} style={{
+          background: COLORS.accent, border: "none", borderRadius: 30,
+          color: "#fff", padding: "14px 28px", fontSize: 15, cursor: "pointer",
+        }}>Recomeçar</button>
+      </div>
+    </div>
+  );
+}
